@@ -14,6 +14,7 @@ from controllers.common.controller_schemas import WorkflowRunPayload as Workflow
 from controllers.common.schema import register_schema_models
 from controllers.service_api import service_api_ns
 from controllers.service_api.app.error import (
+    AppUnavailableError,
     CompletionRequestError,
     NotWorkflowAppError,
     ProviderModelCurrentlyNotSupportError,
@@ -165,12 +166,27 @@ class WorkflowAppLogPaginationResponse(ResponseModel):
     data: list[WorkflowAppLogPartialResponse]
 
 
+class WorkflowInfoResponse(ResponseModel):
+    id: str
+    version: str
+    marked_name: str | None = None
+    marked_comment: str | None = None
+    created_at: int | None = None
+    updated_at: int | None = None
+
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def _normalize_timestamp(cls, value: datetime | int | None) -> int | None:
+        return _to_timestamp(value)
+
+
 register_schema_models(
     service_api_ns,
     WorkflowRunResponse,
     WorkflowRunForLogResponse,
     WorkflowAppLogPartialResponse,
     WorkflowAppLogPaginationResponse,
+    WorkflowInfoResponse,
 )
 
 
@@ -204,6 +220,10 @@ def _serialize_workflow_run(workflow_run: WorkflowRun) -> dict:
 
 def _serialize_workflow_log_pagination(pagination) -> dict:
     return WorkflowAppLogPaginationResponse.model_validate(pagination, from_attributes=True).model_dump(mode="json")
+
+
+def _serialize_workflow_info(workflow) -> dict:
+    return WorkflowInfoResponse.model_validate(workflow, from_attributes=True).model_dump(mode="json")
 
 
 @service_api_ns.route("/workflows/run/<string:workflow_run_id>")
@@ -443,3 +463,31 @@ class WorkflowAppLogApi(Resource):
             )
 
             return _serialize_workflow_log_pagination(workflow_app_log_pagination)
+
+
+@service_api_ns.route("/workflows/info")
+class WorkflowInfoApi(Resource):
+    @service_api_ns.doc("get_workflow_info")
+    @service_api_ns.doc(description="Get workflow information")
+    @service_api_ns.doc(
+        responses={
+            200: "Workflow info retrieved successfully",
+            401: "Unauthorized - invalid API token",
+        }
+    )
+    @validate_app_token
+    @service_api_ns.response(
+        200,
+        "Workflow info retrieved successfully",
+        service_api_ns.models[WorkflowInfoResponse.__name__],
+    )
+    def get(self, app_model: App):
+        app_mode = AppMode.value_of(app_model.mode)
+        if app_mode not in {AppMode.WORKFLOW, AppMode.ADVANCED_CHAT}:
+            raise NotWorkflowAppError()
+
+        workflow = app_model.workflow
+        if workflow is None:
+            raise AppUnavailableError()
+
+        return _serialize_workflow_info(workflow)

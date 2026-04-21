@@ -22,12 +22,13 @@ from unittest.mock import Mock, patch
 import pytest
 from werkzeug.exceptions import BadRequest, NotFound
 
-from controllers.service_api.app.error import NotWorkflowAppError
+from controllers.service_api.app.error import AppUnavailableError, NotWorkflowAppError
 from controllers.service_api.app.workflow import (
     AppQueueManager,
     DifyAPIRepositoryFactory,
     GraphEngineManager,
     WorkflowAppLogApi,
+    WorkflowInfoApi,
     WorkflowLogQuery,
     WorkflowRunApi,
     WorkflowRunByIdApi,
@@ -683,3 +684,69 @@ class TestWorkflowAppLogApiGet:
                 result = _unwrap(api.get)(api, app_model=mock_workflow_app)
 
         assert result == {"page": 1, "limit": 20, "total": 0, "has_more": False, "data": []}
+
+
+class TestWorkflowInfoApi:
+    def test_success_for_workflow_app(self, app) -> None:
+        api = WorkflowInfoApi()
+        handler = _unwrap(api.get)
+        created_at = datetime(2026, 1, 1, tzinfo=UTC)
+        updated_at = datetime(2026, 1, 2, tzinfo=UTC)
+        workflow = SimpleNamespace(
+            id="wf-1",
+            version="1.0.0",
+            marked_name="Main",
+            marked_comment="stable",
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+        app_model = SimpleNamespace(mode=AppMode.WORKFLOW.value, workflow=workflow)
+
+        with app.test_request_context("/workflows/info", method="GET"):
+            result = handler(api, app_model=app_model)
+
+        assert result["id"] == "wf-1"
+        assert result["version"] == "1.0.0"
+        assert result["marked_name"] == "Main"
+        assert result["marked_comment"] == "stable"
+        assert result["created_at"] == int(created_at.timestamp())
+        assert result["updated_at"] == int(updated_at.timestamp())
+
+    def test_success_for_advanced_chat_app(self, app) -> None:
+        api = WorkflowInfoApi()
+        handler = _unwrap(api.get)
+        workflow = SimpleNamespace(
+            id="wf-2",
+            version="2.0.0",
+            marked_name=None,
+            marked_comment=None,
+            created_at=1704067200,
+            updated_at=1704153600,
+        )
+        app_model = SimpleNamespace(mode=AppMode.ADVANCED_CHAT.value, workflow=workflow)
+
+        with app.test_request_context("/workflows/info", method="GET"):
+            result = handler(api, app_model=app_model)
+
+        assert result["id"] == "wf-2"
+        assert result["version"] == "2.0.0"
+        assert result["created_at"] == 1704067200
+        assert result["updated_at"] == 1704153600
+
+    def test_not_workflow_app(self, app) -> None:
+        api = WorkflowInfoApi()
+        handler = _unwrap(api.get)
+        app_model = SimpleNamespace(mode=AppMode.CHAT.value, workflow=SimpleNamespace())
+
+        with app.test_request_context("/workflows/info", method="GET"):
+            with pytest.raises(NotWorkflowAppError):
+                handler(api, app_model=app_model)
+
+    def test_workflow_not_available(self, app) -> None:
+        api = WorkflowInfoApi()
+        handler = _unwrap(api.get)
+        app_model = SimpleNamespace(mode=AppMode.WORKFLOW.value, workflow=None)
+
+        with app.test_request_context("/workflows/info", method="GET"):
+            with pytest.raises(AppUnavailableError):
+                handler(api, app_model=app_model)
